@@ -123,7 +123,10 @@ void ctcp_retransmit_segment(ctcp_state_t *state);
 void ctcp_clean_wrapped_ack_segment(ctcp_state_t *state, ctcp_segment_t *segment);
 
 
+bool ctcp_check_segment(ctcp_state_t *state, ctcp_segment_t *segment);
 
+/* This function used to sort received segments to ensure the order of link list of output segment*/
+void process_segment (ctcp_state_t *state, ctcp_segment_t *segment);
 
 ctcp_state_t *ctcp_init(conn_t *conn, ctcp_config_t *cfg) {
     /* Connection could not be established. */
@@ -272,6 +275,7 @@ void ctcp_read(ctcp_state_t *state) {
 void ctcp_receive(ctcp_state_t *state, ctcp_segment_t *segment, size_t len) {
   	/* FIXME */
 	wrapped_segment_t *new_wrapped_segment;
+	//uint32_t expected_receiv_ack_data;
   	/* If segment is truncated */
   	if (ntohs(segment->len) > len){
 #ifdef DEBUG
@@ -281,7 +285,7 @@ fprintf(stderr, "segment is truncated");
    		return;
   	}
 
-  /* Check the received segment */
+    /* Check the received segment */
 	uint16_t checksum_recv = segment->cksum;
 	segment->cksum = 0;   // when calculated checksum, the field checksum in segment must be 0
 	uint16_t checksum_calc = cksum(segment, (uint16_t)(ntohs(segment->len)));
@@ -293,52 +297,84 @@ fprintf(stderr, "failed checksum");
 		free(segment);
 		return;
   	} 
-  	/* Check whether the received seqno  is the byte that host expected*/
-  	if (ntohl(segment->seqno) ==  (state->rx_state.last_recv_ack_seqno + 1)){
-    	/* Update last acknowledged seqno */
-		uint16_t byteRead = ntohs(segment->len) - sizeof(ctcp_segment_t);
-		if(byteRead == -1)
+
+
+	/* Received Sucessfully */
+	uint16_t byteRead = ntohs(segment->len) - sizeof(ctcp_segment_t);
+	if(byteRead == -1)
 		return;
 #ifdef DEBUG
-printf("The uint16_t value is: %" PRIu32 "\n", state->rx_state.last_recv_ack_seqno);
+//printf("The uint16_t value is: %" PRIu32 "\n", state->rx_state.last_recv_ack_seqno);
 fprintf(stderr,"Received segment\n");
 print_hdr_ctcp(segment);
 #endif
-		state->rx_state.last_recv_ack_seqno = ntohl(segment->seqno)+ byteRead - 1;
-		/* Send ACK to another host */
-		if (!byteRead){
+
+    /* Received ack segment from other host to confirm that this host trasmitted segment successfully*/
+	if (!byteRead){
 #ifdef DEBUG
 printf("NAK segments before cleaning\n");
 print_wrapped_nak_segment(state);
 #endif
-      ctcp_clean_wrapped_ack_segment(state, segment);
+      	ctcp_clean_wrapped_ack_segment(state, segment);
 #ifdef DEBUG
 printf("NAK segments after cleaning\n");
 print_wrapped_nak_segment(state);
 print_state(state);
 #endif
-    	}
-		/* If receiving a FIN segment or data segment */
+    }
+
+
+  	/* If receiving a FIN segment or data segment, checking whether the received seqno  is the byte that host expected*/
+  	if (ntohl(segment->seqno) <=  (state->rx_state.last_recv_ack_seqno + 1)){
 		if (byteRead || (segment->flags & TH_FIN)){
-		//ctcp_clean_wrapped_ack_segment(state);
-		new_wrapped_segment = calloc(1, sizeof(wrapped_segment_t));
-		new_wrapped_segment->segment.seqno = segment->ackno;
-		new_wrapped_segment->segment.len = htons(sizeof(ctcp_segment_t));
-		ctcp_respond_segment(state, new_wrapped_segment);
+			if (ctcp_check_segment(state, segment) == false)
+				return;
+			new_wrapped_segment = calloc(1, sizeof(wrapped_segment_t));
+			new_wrapped_segment->segment.ackno  = htonl(ntohl(segment->seqno) + byteRead);
+			new_wrapped_segment->segment.seqno = segment->ackno;
+			if (ntohl(segment->seqno) < (state->rx_state.last_recv_ack_seqno + 1)){
+				ctcp_respond_segment(state, new_wrapped_segment);
+				/* Sort received segment to ensure the order of link list of output segment*/
+				process_segment(state, segment);
+			} else {
+				state->rx_state.last_recv_ack_seqno = ntohl(segment->seqno) + byteRead - 1;
+				ctcp_respond_segment(state, new_wrapped_segment);
+				ll_add(state->rx_state.output_segment, segment);
+			}
 #ifdef DEBUG
 fprintf(stderr,"Send segment\n");
 print_hdr_ctcp(&new_wrapped_segment->segment);
 print_state(state);
-printf("length of link list %u\n", ll_length(state->tx_state.wrapped_nak_segment));
+//printf("length of link list %u\n", ll_length(state->tx_state.wrapped_nak_segment));
 #endif
-		ll_add(state->rx_state.output_segment, segment);
-		ctcp_output(state);
 		}
-	} else if (ntohl(segment->seqno) > (state->rx_state.last_recv_ack_seqno + 1)) {
-		/* Packet loss */
-		free(segment);
-		return;
+	} 
+	/* There are some lost packet in network */
+	else if (ntohl(segment->seqno) > (state->rx_state.last_recv_ack_seqno + 1)) {
+		/* Selective Repeat */
+		if (byteRead || (segment->flags & TH_FIN)){
+			if (ctcp_check_segment(state, segment) == false)
+				return;
+			new_wrapped_segment = calloc(1, sizeof(wrapped_segment_t));
+			state->rx_state.last_recv_ack_seqno = ntohl(segment->seqno) + byteRead - 1;
+			new_wrapped_segment->segment.seqno  = segment->ackno;
+			new_wrapped_segment->segment.ackno  = htonl(state->rx_state.last_recv_ack_seqno + 1);
+			ctcp_respond_segment(state, new_wrapped_segment);
+			ll_add(state->rx_state.output_segment, segment);
+#ifdef DEBUG
+fprintf(stderr,"Send segment\n");
+print_hdr_ctcp(&new_wrapped_segment->segment);
+print_state(state);
+//printf("length of link list %u\n", ll_length(state->tx_state.wrapped_nak_segment));
+#endif
+		}
+
+
+		/* GoBack N */
+		//free(segment);
+		//return;
   	}
+	ctcp_output(state);
 }
 
 
@@ -369,9 +405,9 @@ void ctcp_output(ctcp_state_t *state) {
 		uint16_t data_segment = ntohs(segment->len) - sizeof(ctcp_segment_t);
 		/* Check received data */
 		if (data_segment){
-#ifdef DEBUG
-fprintf(stderr, "the number bytes data of segment %d", data_segment);
-#endif
+// #ifdef DEBUG
+// fprintf(stderr, "the number bytes data of segment %d", data_segment);
+// #endif
 			/* Check the space of STDOUT */
 			if(data_segment > conn_bufspace(state->conn)){
 #ifdef DEBUG
@@ -388,9 +424,9 @@ fprintf(stderr, "conn_output");
 #endif
 				return;
 			}
-#ifdef DEBUG
-printf("byte Output %d\n", byteSent);
-#endif
+// #ifdef DEBUG
+// printf("byte Output %d\n", byteSent);
+// #endif
     	}
 	    /* If receiving a FIN segment, Outputing an EOF with a length 0*/
 		if (segment->flags & TH_FIN){
@@ -476,7 +512,7 @@ fprintf(stderr,"conn_send");
 
 
 void ctcp_respond_segment(ctcp_state_t *state, wrapped_segment_t *wrapped_segment){
-	wrapped_segment->segment.ackno  = htonl(state->rx_state.last_recv_ack_seqno + 1);
+	wrapped_segment->segment.len = htons(sizeof(ctcp_segment_t));
 	wrapped_segment->segment.flags  |= TH_ACK;
 	wrapped_segment->segment.window = htons(state->ctcp_config.recv_window);
 	wrapped_segment->segment.cksum  = 0;
@@ -527,6 +563,10 @@ fprintf(stderr,"FIN\n");
 		if (current_time() - wrapped_nak_segment->last_sent_time >= state->ctcp_config.rt_timeout){
 			if (state->tx_state.last_sent_nak_seqno != state->tx_state.last_sent_ack_seqno){
 			//if (ntohl(wrapped_nak_segment->segment.seqno) > state->tx_state.last_sent_ack_seqno){
+				if (wrapped_nak_segment->num_retransmit >= MAX_NUM_XMITS){
+					ctcp_destroy(state);
+					return;
+				}
 				ctcp_send_segment(state, wrapped_nak_segment);
 				//continue;
 			} 
@@ -553,3 +593,44 @@ void ctcp_clean_wrapped_ack_segment(ctcp_state_t *state, ctcp_segment_t *segment
 	}
 }
 
+
+bool ctcp_check_segment(ctcp_state_t *state, ctcp_segment_t *segment){
+	if (ll_length(state->rx_state.output_segment) == 0)
+		return true;
+	ll_node_t *current_node = ll_front(state->rx_state.output_segment);
+	while (current_node != NULL){
+		wrapped_segment_t *output_segment = (wrapped_segment_t *) current_node->object;
+		if ((ntohl(segment->seqno) == ntohl(output_segment->segment.seqno)) &&
+			(ntohl(segment->ackno) == ntohl(output_segment->segment.ackno))) {
+			free(segment);
+			return false;
+		}
+		current_node = current_node->next;
+	}
+	return true;
+}
+
+void process_segment(ctcp_state_t *state, ctcp_segment_t *segment){
+	if (ll_length(state->rx_state.output_segment) == 0){
+		ll_add(state->rx_state.output_segment, segment);
+	}
+	else if (ll_length(state->rx_state.output_segment) == 1){
+		ll_add_front(state->rx_state.output_segment, segment);
+	}
+	else{
+		ll_node_t *current_node = ll_front(state->rx_state.output_segment);
+		ctcp_segment_t *current_segment = (ctcp_segment_t *) current_node->object;
+		while (current_node != NULL){
+			if (ntohl(segment->seqno) < ntohl(current_segment->seqno)){
+				ll_node_t *new_node = calloc(sizeof(ll_node_t), 1);
+				memcpy(new_node->object, segment, sizeof(ctcp_segment_t) + strlen(segment->data));
+				new_node->next = current_node;
+				current_node->prev->next = new_node;
+				new_node->prev = current_node->prev;
+				current_node->prev = new_node;
+				break;
+			}
+			current_node = current_node->next;
+		}
+	}
+}
