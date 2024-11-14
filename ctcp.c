@@ -327,6 +327,7 @@ print_hdr_ctcp(segment);
 printf("NAK segments before cleaning\n");
 print_wrapped_nak_segment(state);
 #endif
+		//state->tx_state.last_sent_ack_seqno = ntohl(segment->ackno) - 1;
       	ctcp_clean_wrapped_ack_segment(state, segment);
 #ifdef DEBUG
 printf("NAK segments after cleaning\n");
@@ -335,6 +336,20 @@ print_state(state);
 #endif
     }
 
+	// if (byteRead){
+	// 	uint32_t last_recv_seqno = ntohl(segment->seqno) + strlen(segment->data) - 1;
+	// 	uint32_t lowest_recv_window  = state->rx_state.last_recv_seqno + 1;
+	// 	uint32_t highest_recv_window = state->rx_state.last_recv_seqno + state->ctcp_config.recv_window;
+	// 	if ((last_recv_seqno < lowest_recv_window) || (last_recv_seqno > highest_recv_window)){
+	// 		new_wrapped_segment = calloc(1, sizeof(wrapped_segment_t));
+	// 		new_wrapped_segment->segment.ackno  = htonl(ntohl(segment->seqno) + byteRead);
+	// 		new_wrapped_segment->segment.seqno = segment->ackno;
+	// 		ctcp_respond_segment(state, new_wrapped_segment);
+	// 		free(segment);
+	// 		return;
+	// 	}
+
+	// }
 
   	/* If receiving a FIN segment or data segment, checking whether the received seqno  is the byte that host expected*/
   	if (ntohl(segment->seqno) <=  (state->rx_state.last_recv_ack_seqno + 1)){
@@ -370,7 +385,7 @@ printf("length of link list %u\n", ll_length(state->tx_state.wrapped_nak_segment
 			new_wrapped_segment = calloc(1, sizeof(wrapped_segment_t));
 			state->rx_state.last_recv_ack_seqno = ntohl(segment->seqno) + byteRead - 1;
 			new_wrapped_segment->segment.seqno  = segment->ackno;
-			new_wrapped_segment->segment.ackno  = htonl(state->rx_state.last_recv_ack_seqno + 1);
+			new_wrapped_segment->segment.ackno  = segment->seqno;//htonl(state->rx_state.last_recv_ack_seqno + 1);
 			ctcp_respond_segment(state, new_wrapped_segment);
 			ll_add(state->rx_state.output_segment, segment);
 #ifdef DEBUG
@@ -387,7 +402,6 @@ printf("length of link list %u\n", ll_length(state->tx_state.wrapped_nak_segment
   	}
 	// printf("Before outputing\n");
 	// print_output_segment(state);
-	
 	ctcp_output(state);
 	// printf("After outputing\n");
 	// print_output_segment(state);
@@ -569,15 +583,25 @@ void print_output_segment(ctcp_state_t *state){
 void ctcp_retransmit_segment(ctcp_state_t *state){
 	if (ll_length(state->tx_state.wrapped_nak_segment) == 0)
 		return;
+
 	ll_node_t *current_node = ll_front(state->tx_state.wrapped_nak_segment);
 	int i = 0;
+	//uint16_t remaining_send_window; 
+	uint32_t last_allowed_seqno;
 	if (current_node == NULL)
 		return;
 	while (i < ll_length(state->tx_state.wrapped_nak_segment)){
 		wrapped_segment_t *wrapped_nak_segment =  (wrapped_segment_t *) current_node->object;
+
+		last_allowed_seqno = state->tx_state.last_sent_ack_seqno + state->ctcp_config.send_window;
+		if (last_allowed_seqno < (ntohl(wrapped_nak_segment->segment.seqno) + strlen(wrapped_nak_segment->segment.data) - 1))
+			return;
+
+
 		if (wrapped_nak_segment->num_retransmit == 0){
 			ctcp_send_segment(state, wrapped_nak_segment);
 			state->tx_state.last_sent_nak_seqno += strlen(wrapped_nak_segment->segment.data);
+			//remaining_send_window = state->ctcp_config.send_window - strlen(wrapped_nak_segment->segment.data);
 #ifdef DEBUG
 fprintf(stderr,"Send segment\n");
 print_hdr_ctcp(&wrapped_nak_segment->segment);
@@ -586,7 +610,7 @@ printf("num retransmit %d\n", wrapped_nak_segment->num_retransmit);
 printf("check_EOF: %d\n", state->tx_state.check_EOF);
 if (wrapped_nak_segment->segment.flags & TH_FIN)
 fprintf(stderr,"FIN\n");
-#endif   
+#endif  	
 		}
 		if (current_time() - wrapped_nak_segment->last_sent_time >= state->ctcp_config.rt_timeout){
 			if (state->tx_state.last_sent_nak_seqno != state->tx_state.last_sent_ack_seqno){
@@ -595,6 +619,7 @@ fprintf(stderr,"FIN\n");
 					return;
 				}
 				ctcp_send_segment(state, wrapped_nak_segment);
+				//remaining_send_window = state->ctcp_config.send_window - strlen(wrapped_nak_segment->segment.data);
 				//continue;
 			} 
 		}
