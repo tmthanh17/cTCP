@@ -348,7 +348,6 @@ print_state(state);
 	// 		free(segment);
 	// 		return;
 	// 	}
-
 	// }
 
   	/* If receiving a FIN segment or data segment, checking whether the received seqno  is the byte that host expected*/
@@ -383,7 +382,7 @@ printf("length of link list %u\n", ll_length(state->tx_state.wrapped_nak_segment
 		/* Selective Repeat */
 		if (byteRead || (segment->flags & TH_FIN)){
 			new_wrapped_segment = calloc(1, sizeof(wrapped_segment_t));
-			state->rx_state.last_recv_ack_seqno = ntohl(segment->seqno) + byteRead - 1;
+			//state->rx_state.last_recv_ack_seqno = ntohl(segment->seqno) + byteRead - 1;
 			new_wrapped_segment->segment.seqno  = segment->ackno;
 			new_wrapped_segment->segment.ackno  = segment->seqno;//htonl(state->rx_state.last_recv_ack_seqno + 1);
 			ctcp_respond_segment(state, new_wrapped_segment);
