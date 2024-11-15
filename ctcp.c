@@ -18,6 +18,8 @@
 #include <inttypes.h>
 //#define DEBUG
 #undef  DEBUG
+#define SELECTIVE_REPEAT 1
+#define GO_BACK_N (~SELECTIVE_REPEAT)
 int byteOut = 0;
 int byteIn  = 0;
 
@@ -303,10 +305,12 @@ fprintf(stderr, "failed checksum");
 			new_wrapped_segment->segment.ackno  = htonl(ntohl(segment->seqno) + byteRead);
 			new_wrapped_segment->segment.seqno = segment->ackno;
 			if (ntohl(segment->seqno) < (state->rx_state.last_recv_ack_seqno + 1)){
+				#ifdef SELECTIVE_REPEAT
 				ctcp_respond_segment(state, new_wrapped_segment);
 				/* Handle the delay segment */
 				process_segment(state, segment);
 				return;
+				#endif
 			} else {
 				state->rx_state.last_recv_ack_seqno = ntohl(segment->seqno) + byteRead - 1;
 				ctcp_respond_segment(state, new_wrapped_segment);
@@ -323,11 +327,11 @@ fprintf(stderr, "failed checksum");
 	/* There are some lost packet in network */
 	else if (ntohl(segment->seqno) > (state->rx_state.last_recv_ack_seqno + 1)) {
 		/* Selective Repeat */
+		#ifdef SELECTIVE_REPEAT
 		if (byteRead || (segment->flags & TH_FIN)){
 			new_wrapped_segment = calloc(1, sizeof(wrapped_segment_t));
-			//state->rx_state.last_recv_ack_seqno = ntohl(segment->seqno) + byteRead - 1;
 			new_wrapped_segment->segment.seqno  = segment->ackno;
-			new_wrapped_segment->segment.ackno  = segment->seqno;//htonl(state->rx_state.last_recv_ack_seqno + 1);
+			new_wrapped_segment->segment.ackno  = segment->seqno;
 			ctcp_respond_segment(state, new_wrapped_segment);
 			ll_add(state->rx_state.output_segment, segment);
 // #ifdef DEBUG
@@ -338,9 +342,13 @@ fprintf(stderr, "failed checksum");
 // #endif
 		}
 		return;
-		// /* GoBack N */
-		// free(segment);
-		// return;
+		#endif
+
+		/* GoBack N */
+		#ifdef GO_BACK_N
+		free(segment);
+		return;
+		#endif
   	}
 // #ifdef DEBUG
 // printf("Before outputing\n");
